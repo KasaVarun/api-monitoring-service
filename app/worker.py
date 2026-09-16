@@ -10,10 +10,17 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.alerts import send_alert_webhook
 from app.checker import CheckOutcome, HttpChecker, utcnow
 from app.config import Settings, get_settings
 from app.database import init_db, setup_database
-from app.store import get_endpoint, list_due_endpoints, record_check
+from app.store import (
+    get_endpoint,
+    list_due_endpoints,
+    maybe_create_alert,
+    record_check,
+    record_webhook_delivery,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +172,20 @@ class MonitorWorker:
                 self.settings,
                 consumed_force_check=False,
             )
+            alert = await maybe_create_alert(session, endpoint, outcome, self.settings)
+            if alert is not None:
+                delivered, error = await send_alert_webhook(
+                    alert,
+                    endpoint.name,
+                    self.settings,
+                )
+                if delivered is not None:
+                    await record_webhook_delivery(
+                        session,
+                        alert.id,
+                        delivered=delivered,
+                        error=error,
+                    )
         return outcome
 
     async def _drain(self, timeout: float = 15.0) -> None:

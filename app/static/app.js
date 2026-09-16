@@ -2,6 +2,7 @@ const REFRESH_MS = 5000;
 
 const state = {
   endpoints: [],
+  alerts: [],
   selectedId: null,
   page: 1,
   pageSize: 10,
@@ -19,6 +20,9 @@ const els = {
   listEmpty: document.getElementById("list-empty"),
   tableWrap: document.getElementById("table-wrap"),
   rows: document.getElementById("endpoint-rows"),
+  alertsError: document.getElementById("alerts-error"),
+  alertsEmpty: document.getElementById("alerts-empty"),
+  alertsList: document.getElementById("alerts-list"),
   detailPanel: document.getElementById("detail-panel"),
   detailTitle: document.getElementById("detail-title"),
   detailMeta: document.getElementById("detail-meta"),
@@ -131,6 +135,35 @@ function renderRows() {
     .join("");
 }
 
+function renderAlerts() {
+  if (!state.alerts.length) {
+    show(els.alertsEmpty, true);
+    show(els.alertsList, false);
+    els.alertsList.innerHTML = "";
+    return;
+  }
+  show(els.alertsEmpty, false);
+  show(els.alertsList, true);
+  els.alertsList.innerHTML = state.alerts
+    .map((item) => {
+      const kind = item.kind.toLowerCase();
+      const delivery = item.webhook_delivered === true
+        ? " · webhook delivered"
+        : item.webhook_delivered === false
+          ? ` · webhook failed: ${escapeHtml(item.webhook_error || "unknown error")}`
+          : "";
+      return `<article class="alert-item ${kind}">
+        <div>
+          <span class="badge alert-${kind}">${escapeHtml(item.kind)}</span>
+          <strong>${escapeHtml(item.endpoint_name)}</strong>
+        </div>
+        <p>${escapeHtml(item.message)}</p>
+        <small>${formatTime(item.created_at)}${delivery}</small>
+      </article>`;
+    })
+    .join("");
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -151,6 +184,20 @@ async function loadEndpoints() {
     setBanner(els.listError, error.message);
     els.refreshState.textContent = "Refresh failed";
   }
+}
+
+async function loadAlerts() {
+  try {
+    state.alerts = await request("/api/alerts?limit=20");
+    setBanner(els.alertsError, "");
+    renderAlerts();
+  } catch (error) {
+    setBanner(els.alertsError, error.message);
+  }
+}
+
+async function loadAll() {
+  await Promise.all([loadEndpoints(), loadAlerts()]);
 }
 
 async function loadDetails() {
@@ -210,7 +257,7 @@ els.registerForm.addEventListener("submit", async (event) => {
     els.registerForm.reset();
     els.registerForm.elements.enabled.checked = true;
     setBanner(els.formError, "");
-    await loadEndpoints();
+    await loadAll();
   } catch (error) {
     setBanner(els.formError, error.message);
   }
@@ -235,7 +282,7 @@ els.rows.addEventListener("click", async (event) => {
         method: "PATCH",
         body: JSON.stringify({ enabled: !endpoint.enabled }),
       });
-      await loadEndpoints();
+      await loadAll();
     } catch (error) {
       setBanner(els.listError, error.message);
     }
@@ -249,7 +296,7 @@ els.rows.addEventListener("click", async (event) => {
       setBanner(els.listError, error.message);
     } finally {
       endpoint._checking = false;
-      await loadEndpoints();
+      await loadAll();
     }
   } else if (action === "edit") {
     els.editForm.elements.id.value = endpoint.id;
@@ -277,7 +324,7 @@ els.editForm.addEventListener("submit", async (event) => {
   try {
     await request(`/api/endpoints/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
     els.editDialog.close();
-    await loadEndpoints();
+    await loadAll();
   } catch (error) {
     setBanner(els.editError, error.message);
   }
@@ -319,11 +366,11 @@ els.nextPage.addEventListener("click", async () => {
   await loadDetails();
 });
 
-els.refreshBtn.addEventListener("click", loadEndpoints);
+els.refreshBtn.addEventListener("click", loadAll);
 
 function startTimer() {
   if (state.timer) clearInterval(state.timer);
-  state.timer = setInterval(loadEndpoints, REFRESH_MS);
+  state.timer = setInterval(loadAll, REFRESH_MS);
 }
 
 function bootFromPath() {
@@ -334,5 +381,5 @@ function bootFromPath() {
 }
 
 bootFromPath();
-loadEndpoints();
+loadAll();
 startTimer();

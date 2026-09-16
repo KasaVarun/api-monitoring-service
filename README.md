@@ -18,7 +18,8 @@ Worker   ──►  same SQLite file
 
 - **API process** stores endpoint configuration and sets `force_check=True` for a manual probe. It does not open outbound HTTP connections.
 - **Worker process** is the only component that probes URLs. Every second (configurable) it selects due or force-check endpoints, runs them under a per-endpoint asyncio lock and a global concurrency semaphore, then records the result.
-- **SQLite** holds both configuration and check history. WAL mode lets the API and worker share one file. Data survives restarts via the `data/` directory or a Docker volume.
+- **SQLite** holds configuration, check history, and alert events. WAL mode lets the API and worker share one file. Data survives restarts via the `data/` directory or a Docker volume.
+- **Alerts** create one outage event after a configurable number of consecutive failures and one recovery event when the endpoint returns. Events appear in the dashboard and can optionally be delivered to an HTTPS JSON webhook.
 
 A **single worker instance** is required. Overlap prevention is in-process. Scaling later would mean a row lease (`UPDATE endpoints SET claimed_until=... WHERE claimed_until < now`) or an external queue (Redis/NATS) with one checker pool.
 
@@ -48,6 +49,8 @@ On Railway the launcher (`python -m app.launch`) is PID 1: it starts uvicorn and
 | `checked_at` | UTC timestamp. |
 
 History is pruned by retention days and a per-endpoint row cap.
+
+**AlertEvent** records outage and recovery transitions, the failure count that triggered the event, and optional webhook delivery status. Alerts are deleted with their endpoint.
 
 ## Status semantics
 
@@ -120,6 +123,9 @@ curl -s -X POST http://127.0.0.1:8000/api/endpoints/<id>/check
 # History (newest first)
 curl -s 'http://127.0.0.1:8000/api/endpoints/<id>/checks?page=1&page_size=20'
 
+# Recent outage and recovery alerts
+curl -s 'http://127.0.0.1:8000/api/alerts?limit=20'
+
 # Delete
 curl -s -X DELETE http://127.0.0.1:8000/api/endpoints/<id>
 ```
@@ -155,6 +161,8 @@ Do not run these steps from this coding session; they are for you to apply in th
    | `DATABASE_URL` | Yes | `sqlite+aiosqlite:////data/monitor.db` |
    | `APP_USERNAME` | Recommended | Dashboard/API Basic auth username |
    | `APP_PASSWORD` | Recommended | Dashboard/API Basic auth password |
+   | `ALERT_FAILURE_THRESHOLD` | Optional | Consecutive failures before an outage alert; default `3` |
+   | `ALERT_WEBHOOK_URL` | Optional | HTTPS endpoint that receives outage and recovery JSON |
    | `LOG_LEVEL` | Optional | `INFO` |
 
    Both `APP_USERNAME` and `APP_PASSWORD` must be non-empty to enable auth. `/health` stays public so Railway can health-check the service.
@@ -192,6 +200,9 @@ All settings are environment variables (see `.env.example`):
 | `LOG_LEVEL` | `INFO` | Logging |
 | `APP_USERNAME` | empty | Optional Basic auth user |
 | `APP_PASSWORD` | empty | Optional Basic auth password |
+| `ALERT_FAILURE_THRESHOLD` | `3` | Consecutive failures before creating an outage alert |
+| `ALERT_WEBHOOK_URL` | empty | Optional HTTPS JSON webhook for outage and recovery events |
+| `ALERT_WEBHOOK_TIMEOUT_SECONDS` | `5` | Webhook request timeout |
 
 ## Deploying to a DigitalOcean Droplet
 
@@ -215,13 +226,13 @@ Public internet exposure without Basic auth or an equivalent proxy is not accept
 - **3xx is DOWN.** That matches the written 200–299 rule. If “follow safe redirects” is needed later, each hop must pass the same IP validation and connect to the validated address.
 - **Uptime is check-based, last 24 hours.** `uptime_percent = up_checks / total_checks`. It is not time-weighted. Gaps while the worker is stopped are not counted as downtime.
 - **IPv6/IPv4 policy is fail-closed.** If any resolved address is blocked, the destination is rejected. That stops DNS rebinding at the cost of refusing dual-stack hosts that publish a private extra record.
-- **Alerts are out of scope.** The consecutive failure count is the hook you would use for paging later.
+- **Webhook delivery is best effort.** Alert events are persisted even when the optional webhook fails. Delivery is attempted once and the result is shown with the alert; production paging would normally add a retry queue.
 
 ## Interview walkthrough
 
 1. **Register.** Dashboard `POST /api/endpoints` → FastAPI validates JSON, interval bounds, URL syntax, and resolved IPs → row inserted with `next_check_at=now` and `availability=UNKNOWN`.
 2. **Schedule.** Worker tick loads `force_check OR (enabled AND next_check_at <= now)`, skips IDs already in-flight, and starts at most `CHECK_CONCURRENCY` tasks.
 3. **Probe.** For that endpoint the worker takes an asyncio lock (no overlapping probe), re-reads the row, consumes `force_check`, resolves+validates, connects to the pinned IP with Host/SNI of the original hostname, times the GET with a monotonic clock, and truncates the body.
-4. **Record.** Result row is appended. DOWN increments both failure counters; UP resets the streak only. `next_check_at` becomes `checked_at + interval`. Old history is pruned.
-5. **Read.** List endpoints uses the denormalized last result. Details add paginated history (newest first) and 24-hour uptime. Manual check sets `force_check` and waits until a history row appears or `MANUAL_CHECK_WAIT_SECONDS` elapses (504 if the worker is down).
+4. **Record and alert.** Result row is appended. DOWN increments both failure counters; UP resets the streak only. At the configured threshold, the worker creates one OUTAGE event; the first later success creates one RECOVERY event. An optional webhook receives the same event. `next_check_at` becomes `checked_at + interval`. Old history is pruned.
+5. **Read.** List endpoints uses the denormalized last result. Details add paginated history (newest first) and 24-hour uptime. The dashboard also lists recent alert events. Manual check sets `force_check` and waits until a history row appears or `MANUAL_CHECK_WAIT_SECONDS` elapses (504 if the worker is down).
 6. **Scale later.** Keep the API stateless. Move the worker to a lease/queue so N replicas can run without double-checking the same endpoint. Swap SQLite for Postgres when you need multiple API nodes.

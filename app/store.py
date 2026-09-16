@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.checker import CheckOutcome, utcnow
 from app.config import Settings
-from app.models import CheckResult, Endpoint
+from app.models import AlertEvent, CheckResult, Endpoint
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -104,10 +104,7 @@ async def list_due_endpoints(session: AsyncSession, limit: int) -> list[Endpoint
         select(Endpoint)
         .where(
             (Endpoint.force_check.is_(True))
-            | (
-                (Endpoint.enabled.is_(True))
-                & (Endpoint.next_check_at <= now)
-            )
+            | ((Endpoint.enabled.is_(True)) & (Endpoint.next_check_at <= now))
         )
         .order_by(Endpoint.force_check.desc(), Endpoint.next_check_at.asc())
         .limit(limit)
@@ -253,3 +250,87 @@ async def uptime_summary(
         )
     )
     return int(total or 0), int(up or 0)
+
+
+async def latest_alert(session: AsyncSession, endpoint_id: str) -> AlertEvent | None:
+    stmt = (
+        select(AlertEvent)
+        .where(AlertEvent.endpoint_id == endpoint_id)
+        .order_by(AlertEvent.created_at.desc(), AlertEvent.id.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def maybe_create_alert(
+    session: AsyncSession,
+    endpoint: Endpoint,
+    outcome: CheckOutcome,
+    settings: Settings,
+) -> AlertEvent | None:
+    """Create one outage alert per incident and one recovery alert afterward."""
+    previous = await latest_alert(session, endpoint.id)
+    alert: AlertEvent | None = None
+
+    if (
+        outcome.availability == "DOWN"
+        and endpoint.consecutive_failures >= settings.alert_failure_threshold
+        and (previous is None or previous.kind != "OUTAGE")
+    ):
+        status = (
+            f"HTTP {outcome.status_code}"
+            if outcome.status_code is not None
+            else (outcome.error_message or "request failed")
+        )
+        alert = AlertEvent(
+            endpoint_id=endpoint.id,
+            kind="OUTAGE",
+            message=(
+                f"{endpoint.name} is DOWN after {endpoint.consecutive_failures} "
+                f"consecutive failures ({status})."
+            ),
+            status_code=outcome.status_code,
+            consecutive_failures=endpoint.consecutive_failures,
+            created_at=outcome.checked_at,
+        )
+    elif outcome.availability == "UP" and previous is not None and previous.kind == "OUTAGE":
+        alert = AlertEvent(
+            endpoint_id=endpoint.id,
+            kind="RECOVERY",
+            message=f"{endpoint.name} recovered and is UP (HTTP {outcome.status_code}).",
+            status_code=outcome.status_code,
+            consecutive_failures=0,
+            created_at=outcome.checked_at,
+        )
+
+    if alert is None:
+        return None
+    session.add(alert)
+    await session.commit()
+    await session.refresh(alert)
+    return alert
+
+
+async def list_alerts(session: AsyncSession, *, limit: int = 50) -> list[tuple[AlertEvent, str]]:
+    stmt = (
+        select(AlertEvent, Endpoint.name)
+        .join(Endpoint, Endpoint.id == AlertEvent.endpoint_id)
+        .order_by(AlertEvent.created_at.desc(), AlertEvent.id.desc())
+        .limit(limit)
+    )
+    return [(row[0], row[1]) for row in (await session.execute(stmt)).all()]
+
+
+async def record_webhook_delivery(
+    session: AsyncSession,
+    alert_id: str,
+    *,
+    delivered: bool,
+    error: str | None,
+) -> None:
+    alert = await session.get(AlertEvent, alert_id)
+    if alert is None:
+        return
+    alert.webhook_delivered = delivered
+    alert.webhook_error = error[:256] if error else None
+    await session.commit()

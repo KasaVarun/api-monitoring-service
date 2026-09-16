@@ -3,7 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +28,18 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     app_username: str = ""
     app_password: SecretStr | None = None
+    alert_failure_threshold: int = Field(default=3, ge=1, le=100)
+    alert_webhook_url: SecretStr | None = None
+    alert_webhook_timeout_seconds: float = Field(default=5.0, ge=1, le=30)
+
+    @field_validator("alert_webhook_url")
+    @classmethod
+    def validate_alert_webhook_url(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None or not value.get_secret_value().strip():
+            return value
+        if not value.get_secret_value().strip().lower().startswith("https://"):
+            raise ValueError("ALERT_WEBHOOK_URL must use https://")
+        return value
 
     def sqlite_path(self) -> Path | None:
         url = self.database_url
@@ -48,6 +60,11 @@ class Settings(BaseSettings):
         if self.app_password is None:
             return ""
         return self.app_password.get_secret_value()
+
+    def secret_alert_webhook_url(self) -> str:
+        if self.alert_webhook_url is None:
+            return ""
+        return self.alert_webhook_url.get_secret_value().strip()
 
 
 @lru_cache

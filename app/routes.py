@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.deps import get_app_settings, get_resolver, get_session
 from app.schemas import (
+    AlertOut,
     CheckOut,
     EndpointCreate,
     EndpointDetail,
@@ -24,6 +25,7 @@ from app.store import (
     delete_endpoint,
     get_endpoint,
     latest_check_since,
+    list_alerts,
     list_checks,
     list_endpoints,
     request_force_check,
@@ -205,14 +207,34 @@ def create_api_router() -> APIRouter:
         endpoint = await get_endpoint(session, endpoint_id)
         if endpoint is None:
             raise HTTPException(status_code=404, detail="Endpoint not found")
-        items, total = await list_checks(
-            session, endpoint_id, page=page, page_size=page_size
-        )
+        items, total = await list_checks(session, endpoint_id, page=page, page_size=page_size)
         return PaginatedChecks(
             items=[CheckOut.model_validate(item) for item in items],
             page=page,
             page_size=page_size,
             total=total,
         )
+
+    @router.get("/alerts", response_model=list[AlertOut], tags=["alerts"])
+    async def list_alerts_route(
+        limit: int = Query(default=50, ge=1, le=100),
+        session: AsyncSession = Depends(get_session),
+    ) -> list[AlertOut]:
+        rows = await list_alerts(session, limit=limit)
+        return [
+            AlertOut(
+                id=alert.id,
+                endpoint_id=alert.endpoint_id,
+                endpoint_name=endpoint_name,
+                kind=alert.kind,
+                message=alert.message,
+                status_code=alert.status_code,
+                consecutive_failures=alert.consecutive_failures,
+                webhook_delivered=alert.webhook_delivered,
+                webhook_error=alert.webhook_error,
+                created_at=alert.created_at,
+            )
+            for alert, endpoint_name in rows
+        ]
 
     return router

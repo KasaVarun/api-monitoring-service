@@ -106,6 +106,21 @@ class HealthOut(BaseModel):
     database: Literal["ok", "error"]
 
 
+class AlertOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    endpoint_id: str
+    endpoint_name: str
+    kind: Literal["OUTAGE", "RECOVERY"]
+    message: str
+    status_code: int | None
+    consecutive_failures: int
+    webhook_delivered: bool | None
+    webhook_error: str | None
+    created_at: datetime
+
+
 class ErrorBody(BaseModel):
     error: str
     message: str

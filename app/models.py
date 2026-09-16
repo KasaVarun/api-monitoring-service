@@ -65,6 +65,11 @@ class Endpoint(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    alerts: Mapped[list["AlertEvent"]] = relationship(
+        back_populates="endpoint",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class CheckResult(Base):
@@ -84,3 +89,24 @@ class CheckResult(Base):
     checked_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
 
     endpoint: Mapped[Endpoint] = relationship(back_populates="checks")
+
+
+class AlertEvent(Base):
+    __tablename__ = "alert_events"
+    __table_args__ = (Index("ix_alerts_endpoint_time", "endpoint_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    endpoint_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("endpoints.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    message: Mapped[str] = mapped_column(String(256), nullable=False)
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False)
+    webhook_delivered: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    webhook_error: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+
+    endpoint: Mapped[Endpoint] = relationship(back_populates="alerts")
