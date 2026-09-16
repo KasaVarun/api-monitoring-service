@@ -203,36 +203,3 @@ All settings are environment variables (see `.env.example`):
 | `ALERT_FAILURE_THRESHOLD` | `3` | Consecutive failures before creating an outage alert |
 | `ALERT_WEBHOOK_URL` | empty | Optional HTTPS JSON webhook for outage and recovery events |
 | `ALERT_WEBHOOK_TIMEOUT_SECONDS` | `5` | Webhook request timeout |
-
-## Deploying to a DigitalOcean Droplet
-
-These are instructions only. This repository does not create paid resources.
-
-1. Create an Ubuntu Droplet and a non-root user with Docker and Docker Compose installed.
-2. Open only ports 22, 80, and 443 in the cloud firewall. Do not publish port 8000 publicly.
-3. Clone this repo onto the droplet. `cp .env.example .env` and keep `DATABASE_URL=sqlite+aiosqlite:////data/monitor.db`.
-4. Run `docker compose up -d --build`. The `monitor-data` volume is the persistent store; back it up with `docker run --rm -v api-monitor_monitor-data:/data -v $PWD:/backup busybox tar czf /backup/monitor.tgz /data`.
-5. Put Caddy or Nginx on the host (or as a compose service) to terminate HTTPS with Let’s Encrypt. You can also set `APP_USERNAME` and `APP_PASSWORD` on the containers for in-app Basic auth. A starting Caddyfile is in `deploy/Caddyfile.example`. Point the proxy at `127.0.0.1:8000` and do not expose the API port on `0.0.0.0` in production (`ports` in compose can be changed to `127.0.0.1:8000:8000`).
-6. Confirm `/health` through the proxy, then register a real HTTPS endpoint from the dashboard.
-
-Public internet exposure without Basic auth or an equivalent proxy is not acceptable.
-
-## Tradeoffs and limitations
-
-- **One worker.** Simple to explain and correct for the assignment. Not horizontally scalable without a distributed lock or queue.
-- **SQLite.** Perfect for a single droplet or one Railway replica and a few hundred endpoints. WAL handles the API+worker pair. It is not the right store for a multi-region service.
-- **Optional in-app Basic auth.** Enabled only when both `APP_USERNAME` and `APP_PASSWORD` are set. There are no user accounts or roles.
-- **HEAD is not used.** Some origin servers skip GET-only health paths; GET with a truncated body is more compatible and still bounded.
-- **3xx is DOWN.** That matches the written 200–299 rule. If “follow safe redirects” is needed later, each hop must pass the same IP validation and connect to the validated address.
-- **Uptime is check-based, last 24 hours.** `uptime_percent = up_checks / total_checks`. It is not time-weighted. Gaps while the worker is stopped are not counted as downtime.
-- **IPv6/IPv4 policy is fail-closed.** If any resolved address is blocked, the destination is rejected. That stops DNS rebinding at the cost of refusing dual-stack hosts that publish a private extra record.
-- **Webhook delivery is best effort.** Alert events are persisted even when the optional webhook fails. Delivery is attempted once and the result is shown with the alert; production paging would normally add a retry queue.
-
-## Interview walkthrough
-
-1. **Register.** Dashboard `POST /api/endpoints` → FastAPI validates JSON, interval bounds, URL syntax, and resolved IPs → row inserted with `next_check_at=now` and `availability=UNKNOWN`.
-2. **Schedule.** Worker tick loads `force_check OR (enabled AND next_check_at <= now)`, skips IDs already in-flight, and starts at most `CHECK_CONCURRENCY` tasks.
-3. **Probe.** For that endpoint the worker takes an asyncio lock (no overlapping probe), re-reads the row, consumes `force_check`, resolves+validates, connects to the pinned IP with Host/SNI of the original hostname, times the GET with a monotonic clock, and truncates the body.
-4. **Record and alert.** Result row is appended. DOWN increments both failure counters; UP resets the streak only. At the configured threshold, the worker creates one OUTAGE event; the first later success creates one RECOVERY event. An optional webhook receives the same event. `next_check_at` becomes `checked_at + interval`. Old history is pruned.
-5. **Read.** List endpoints uses the denormalized last result. Details add paginated history (newest first) and 24-hour uptime. The dashboard also lists recent alert events. Manual check sets `force_check` and waits until a history row appears or `MANUAL_CHECK_WAIT_SECONDS` elapses (504 if the worker is down).
-6. **Scale later.** Keep the API stateless. Move the worker to a lease/queue so N replicas can run without double-checking the same endpoint. Swap SQLite for Postgres when you need multiple API nodes.
