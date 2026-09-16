@@ -1,0 +1,16 @@
+# Example reverse proxy for a DigitalOcean Droplet.
+# Place this on the droplet, not used by local docker compose.
+#
+#   caddy hash-password
+#   docker run --rm -p 80:80 -p 443:443 \
+#     -v $PWD/Caddyfile:/etc/caddy/Caddyfile \
+#     -v caddy-data:/data \
+#     caddy:2
+
+:443 {
+  reverse_proxy api:8000
+
+  basicauth {
+    monitor $2a$14$replace_with_caddy_hash_password
+  }
+}

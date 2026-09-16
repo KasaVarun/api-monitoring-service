@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>API Monitor</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Endpoint monitoring</p>
+          <h1>API Monitor</h1>
+        </div>
+        <div class="topbar-meta">
+          <span id="refresh-state" class="muted">Loading…</span>
+          <button type="button" id="refresh-btn" class="ghost">Refresh</button>
+        </div>
+      </header>
+
+      <section class="panel" id="register-panel">
+        <h2>Register endpoint</h2>
+        <form id="register-form" class="form-grid">
+          <label>
+            Name
+            <input name="name" maxlength="100" required placeholder="Payments API" />
+          </label>
+          <label class="span-2">
+            URL
+            <input
+              name="url"
+              type="url"
+              maxlength="2048"
+              required
+              placeholder="https://api.example.com/health"
+            />
+          </label>
+          <label>
+            Interval (seconds)
+            <input name="interval_seconds" type="number" min="10" max="3600" placeholder="60" />
+          </label>
+          <label class="checkbox">
+            <input name="enabled" type="checkbox" checked />
+            Enabled
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="primary">Add endpoint</button>
+          </div>
+        </form>
+        <p id="form-error" class="banner error hidden"></p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Endpoints</h2>
+          <p class="muted">Status is UP for HTTP 200–299, DOWN otherwise, UNKNOWN before the first check.</p>
+        </div>
+        <p id="list-error" class="banner error hidden"></p>
+        <div id="list-empty" class="empty hidden">
+          No endpoints yet. Register one above to start monitoring.
+        </div>
+        <div id="table-wrap" class="table-wrap hidden">
+          <table class="stack-table endpoint-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>URL</th>
+                <th>Status</th>
+                <th>HTTP</th>
+                <th>Latency</th>
+                <th>Last check (UTC)</th>
+                <th>Failures</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="endpoint-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="detail-panel" class="panel hidden">
+        <div class="panel-head">
+          <h2 id="detail-title">Endpoint details</h2>
+          <button type="button" id="close-detail" class="ghost">Close</button>
+        </div>
+        <p id="detail-meta" class="muted detail-meta"></p>
+        <div class="stats">
+          <div>
+            <span class="stat-label">Uptime (last 24 hours)</span>
+            <strong id="uptime-value">—</strong>
+          </div>
+          <div>
+            <span class="stat-label">Checks in window</span>
+            <strong id="uptime-count">—</strong>
+          </div>
+          <div>
+            <span class="stat-label">Consecutive failures</span>
+            <strong id="detail-consecutive">—</strong>
+          </div>
+        </div>
+        <p id="detail-error" class="banner error hidden"></p>
+        <div class="table-wrap">
+          <table class="stack-table history-table">
+            <thead>
+              <tr>
+                <th>Checked at (UTC)</th>
+                <th>Status</th>
+                <th>HTTP</th>
+                <th>Latency</th>
+                <th>Error</th>
+              </tr>
+            </thead>
+            <tbody id="history-rows"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button type="button" id="prev-page" class="ghost">Previous</button>
+          <span id="page-label" class="muted"></span>
+          <button type="button" id="next-page" class="ghost">Next</button>
+        </div>
+      </section>
+    </div>
+
+    <dialog id="edit-dialog">
+      <form id="edit-form" method="dialog" class="dialog-form">
+        <h3>Edit endpoint</h3>
+        <input type="hidden" name="id" />
+        <label>
+          Name
+          <input name="name" maxlength="100" required />
+        </label>
+        <label>
+          URL
+          <input name="url" type="url" maxlength="2048" required />
+        </label>
+        <label>
+          Interval (seconds)
+          <input name="interval_seconds" type="number" min="10" max="3600" required />
+        </label>
+        <p id="edit-error" class="banner error hidden"></p>
+        <div class="form-actions">
+          <button type="button" id="edit-cancel" class="ghost" value="cancel">Cancel</button>
+          <button type="submit" class="primary">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="delete-dialog">
+      <form method="dialog" class="dialog-form">
+        <h3>Delete endpoint?</h3>
+        <p id="delete-message">This removes the endpoint and its check history.</p>
+        <div class="form-actions">
+          <button value="cancel" class="ghost">Cancel</button>
+          <button id="delete-confirm" value="confirm" class="danger">Delete</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
