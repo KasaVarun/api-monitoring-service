@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.auth import BasicAuthMiddleware, auth_enabled
 from app.checker import HttpChecker
 from app.config import Settings, get_settings
 from app.database import init_db, setup_database
@@ -43,6 +44,14 @@ def create_app(
         )
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
+        username_set = bool(settings.app_username.strip())
+        password_set = bool(settings.secret_password())
+        if username_set != password_set:
+            logging.getLogger(__name__).warning(
+                "APP_USERNAME and APP_PASSWORD must both be set to enable authentication"
+            )
+        elif auth_enabled(settings):
+            logging.getLogger(__name__).info("HTTP Basic authentication is enabled")
         engine, session_factory = setup_database(settings)
         await init_db(engine)
         app.state.settings = settings
@@ -58,8 +67,8 @@ def create_app(
     app = FastAPI(
         title="API Monitor",
         description=(
-            "HTTP endpoint monitoring service. Authentication is not included; "
-            "protect public deployments with a reverse proxy or network policy."
+            "HTTP endpoint monitoring service. Set APP_USERNAME and APP_PASSWORD "
+            "to enable HTTP Basic authentication. /health stays public."
         ),
         version="1.0.0",
         lifespan=lifespan,
@@ -111,6 +120,7 @@ def create_app(
         return JSONResponse(
             status_code=exc.status_code,
             content={"error": _error_code(exc.status_code), "message": message, "details": None},
+            headers=dict(exc.headers) if exc.headers else None,
         )
 
     if STATIC_DIR.exists():
@@ -124,12 +134,14 @@ def create_app(
         async def dashboard_detail(endpoint_id: str) -> FileResponse:  # noqa: ARG001
             return FileResponse(STATIC_DIR / "index.html")
 
+    app.add_middleware(BasicAuthMiddleware)
     return app
 
 
 def _error_code(status_code: int) -> str:
     return {
         400: "bad_request",
+        401: "unauthorized",
         404: "not_found",
         409: "conflict",
         422: "validation_error",

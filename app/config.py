@@ -3,7 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     manual_check_wait_seconds: float = Field(default=20.0, ge=1, le=120)
     max_response_bytes: int = Field(default=8192, ge=0, le=1_000_000)
     log_level: str = "INFO"
+    app_username: str = ""
+    app_password: SecretStr | None = None
 
     def sqlite_path(self) -> Path | None:
         url = self.database_url
@@ -41,6 +43,11 @@ class Settings(BaseSettings):
         path = self.sqlite_path()
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
+
+    def secret_password(self) -> str:
+        if self.app_password is None:
+            return ""
+        return self.app_password.get_secret_value()
 
 
 @lru_cache

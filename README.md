@@ -1,8 +1,10 @@
 # API Monitor
 
-HTTP endpoint monitoring service built as a mock DigitalOcean coding assignment. A FastAPI process serves the REST API and dashboard. A separate worker process performs the probes, writes history, and updates status.
+HTTP endpoint monitoring service built as a mock DigitalOcean coding assignment. A FastAPI process serves the REST API and dashboard. A worker process performs the probes, writes history, and updates status.
 
-Authentication is **not** included. The app is safe for local demos. Public deployments must add access control in front of it (see [Deploying to a DigitalOcean Droplet](#deploying-to-a-digitalocean-droplet)).
+Local **Docker Compose** still runs API and worker as two services. **Railway** (and the default Docker image) uses a production launcher that starts both processes in one container.
+
+Set `APP_USERNAME` and `APP_PASSWORD` to enable HTTP Basic authentication on public deployments. `/health` remains unauthenticated for platform health checks.
 
 ## Architecture
 
@@ -18,7 +20,9 @@ Worker   ──►  same SQLite file
 - **Worker process** is the only component that probes URLs. Every second (configurable) it selects due or force-check endpoints, runs them under a per-endpoint asyncio lock and a global concurrency semaphore, then records the result.
 - **SQLite** holds both configuration and check history. WAL mode lets the API and worker share one file. Data survives restarts via the `data/` directory or a Docker volume.
 
-A **single worker instance** is required. Overlap prevention is in-process. Multiple workers would race. Scaling later would mean a row lease (`UPDATE endpoints SET claimed_until=... WHERE claimed_until < now`) or an external queue (Redis/NATS) with one checker pool.
+A **single worker instance** is required. Overlap prevention is in-process. Scaling later would mean a row lease (`UPDATE endpoints SET claimed_until=... WHERE claimed_until < now`) or an external queue (Redis/NATS) with one checker pool.
+
+On Railway the launcher (`python -m app.launch`) is PID 1: it starts uvicorn and the worker, forwards `SIGTERM`/`SIGINT`, and exits if either child dies so the platform can restart the container.
 
 ## Data model
 
@@ -133,7 +137,31 @@ docker compose up --build
 - SQLite file: Docker volume `monitor-data` mounted at `/data/monitor.db`
 - Worker and API share that volume
 
+The image default command is `python -m app.launch` (API + worker together). Compose **overrides** that with separate `command:` values, so local API and worker remain two containers.
+
 Stop with `docker compose down`. The named volume keeps history. Add `-v` only if you intend to wipe it.
+
+## Deploying to Railway
+
+Do not run these steps from this coding session; they are for you to apply in the Railway dashboard.
+
+1. Create a new Railway project and deploy this repo. Railway should detect the `Dockerfile`. The default CMD starts both the API and the worker.
+2. Add a **volume** mounted at `/data`. SQLite must live on that volume so checks survive restarts and deploys.
+3. Set environment variables:
+
+   | Variable | Required | Value |
+   | --- | --- | --- |
+   | `PORT` | Set by Railway | Leave Railway’s value. The launcher binds `0.0.0.0:${PORT:-8000}`. |
+   | `DATABASE_URL` | Yes | `sqlite+aiosqlite:////data/monitor.db` |
+   | `APP_USERNAME` | Recommended | Dashboard/API Basic auth username |
+   | `APP_PASSWORD` | Recommended | Dashboard/API Basic auth password |
+   | `LOG_LEVEL` | Optional | `INFO` |
+
+   Both `APP_USERNAME` and `APP_PASSWORD` must be non-empty to enable auth. `/health` stays public so Railway can health-check the service.
+4. Generate a **public domain** in Railway (Settings → Networking → Generate domain). The app is then at `https://<your-service>.up.railway.app`. `/health` should return `{"status":"ok","database":"ok"}` without credentials. The dashboard, `/api`, `/docs`, and `/redoc` prompt for Basic auth when credentials are configured.
+5. Keep a **single replica**. Two replicas would run two workers against one SQLite file.
+
+This session does not create a Railway project or deploy the image.
 
 ## Testing
 
@@ -162,6 +190,8 @@ All settings are environment variables (see `.env.example`):
 | `MANUAL_CHECK_WAIT_SECONDS` | `20` | API wait after “check now” |
 | `MAX_RESPONSE_BYTES` | `8192` | Body cap |
 | `LOG_LEVEL` | `INFO` | Logging |
+| `APP_USERNAME` | empty | Optional Basic auth user |
+| `APP_PASSWORD` | empty | Optional Basic auth password |
 
 ## Deploying to a DigitalOcean Droplet
 
@@ -171,16 +201,16 @@ These are instructions only. This repository does not create paid resources.
 2. Open only ports 22, 80, and 443 in the cloud firewall. Do not publish port 8000 publicly.
 3. Clone this repo onto the droplet. `cp .env.example .env` and keep `DATABASE_URL=sqlite+aiosqlite:////data/monitor.db`.
 4. Run `docker compose up -d --build`. The `monitor-data` volume is the persistent store; back it up with `docker run --rm -v api-monitor_monitor-data:/data -v $PWD:/backup busybox tar czf /backup/monitor.tgz /data`.
-5. Put Caddy or Nginx on the host (or as a compose service) to terminate HTTPS with Let’s Encrypt and to add **HTTP basic auth** or SSO. A starting Caddyfile is in `deploy/Caddyfile.example`. Point the proxy at `127.0.0.1:8000` and do not expose the API port on `0.0.0.0` in production (`ports` in compose can be changed to `127.0.0.1:8000:8000`).
+5. Put Caddy or Nginx on the host (or as a compose service) to terminate HTTPS with Let’s Encrypt. You can also set `APP_USERNAME` and `APP_PASSWORD` on the containers for in-app Basic auth. A starting Caddyfile is in `deploy/Caddyfile.example`. Point the proxy at `127.0.0.1:8000` and do not expose the API port on `0.0.0.0` in production (`ports` in compose can be changed to `127.0.0.1:8000:8000`).
 6. Confirm `/health` through the proxy, then register a real HTTPS endpoint from the dashboard.
 
-This application has no user accounts. Network policy plus the reverse proxy **are** the access control.
+Public internet exposure without Basic auth or an equivalent proxy is not acceptable.
 
 ## Tradeoffs and limitations
 
 - **One worker.** Simple to explain and correct for the assignment. Not horizontally scalable without a distributed lock or queue.
-- **SQLite.** Perfect for a single droplet and a few hundred endpoints. WAL handles the API+worker pair. It is not the right store for a multi-region service.
-- **No auth in-app.** Keeps the demo small. Public internet exposure without a proxy is not acceptable.
+- **SQLite.** Perfect for a single droplet or one Railway replica and a few hundred endpoints. WAL handles the API+worker pair. It is not the right store for a multi-region service.
+- **Optional in-app Basic auth.** Enabled only when both `APP_USERNAME` and `APP_PASSWORD` are set. There are no user accounts or roles.
 - **HEAD is not used.** Some origin servers skip GET-only health paths; GET with a truncated body is more compatible and still bounded.
 - **3xx is DOWN.** That matches the written 200–299 rule. If “follow safe redirects” is needed later, each hop must pass the same IP validation and connect to the validated address.
 - **Uptime is check-based, last 24 hours.** `uptime_percent = up_checks / total_checks`. It is not time-weighted. Gaps while the worker is stopped are not counted as downtime.
