@@ -4,7 +4,7 @@ HTTP endpoint monitoring service built as a mock DigitalOcean coding assignment.
 
 Local **Docker Compose** still runs API and worker as two services. **Railway** (and the default Docker image) uses a production launcher that starts both processes in one container.
 
-Set `APP_USERNAME` and `APP_PASSWORD` to enable HTTP Basic authentication on public deployments. `/health` remains unauthenticated for platform health checks.
+The dashboard uses database-backed signup/login accounts and revocable cookie sessions. `APP_USERNAME` and `APP_PASSWORD` can seed the first account during deployment. `/health` remains public for platform health checks.
 
 ## Architecture
 
@@ -19,6 +19,7 @@ Worker   ──►  same SQLite file
 - **API process** stores endpoint configuration and sets `force_check=True` for a manual probe. It does not open outbound HTTP connections.
 - **Worker process** is the only component that probes URLs. Every second (configurable) it selects due or force-check endpoints, runs them under a per-endpoint asyncio lock and a global concurrency semaphore, then records the result.
 - **SQLite** holds configuration, check history, and alert events. WAL mode lets the API and worker share one file. Data survives restarts via the `data/` directory or a Docker volume.
+- **Authentication** stores scrypt password hashes and SHA-256 hashes of random session tokens. The browser receives only an HttpOnly, SameSite cookie; Railway HTTPS also marks it Secure.
 - **Alerts** create one outage event after a configurable number of consecutive failures and one recovery event when the endpoint returns. Events appear in the dashboard and can optionally be delivered to an HTTPS JSON webhook.
 
 A **single worker instance** is required. Overlap prevention is in-process. Scaling later would mean a row lease (`UPDATE endpoints SET claimed_until=... WHERE claimed_until < now`) or an external queue (Redis/NATS) with one checker pool.
@@ -101,11 +102,18 @@ python -m app.worker
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000) for the dashboard, [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) for generated API docs, and [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health) for liveness.
 
+Create an account on `/signup`, then log in at `/login`. Accounts provide access to the same shared monitoring workspace; endpoint ownership and roles are outside this assignment's scope.
+
 ### API examples
 
 ```bash
+# Create an account and save the session cookie
+curl -s -c cookies.txt -X POST http://127.0.0.1:8000/api/auth/signup \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"operator","password":"change-this-password"}'
+
 # Create
-curl -s -X POST http://127.0.0.1:8000/api/endpoints \
+curl -s -b cookies.txt -X POST http://127.0.0.1:8000/api/endpoints \
   -H 'Content-Type: application/json' \
   -d '{"name":"Example","url":"https://example.com/","interval_seconds":60}'
 
@@ -159,14 +167,16 @@ Do not run these steps from this coding session; they are for you to apply in th
    | --- | --- | --- |
    | `PORT` | Set by Railway | Leave Railway’s value. The launcher binds `0.0.0.0:${PORT:-8000}`. |
    | `DATABASE_URL` | Yes | `sqlite+aiosqlite:////data/monitor.db` |
-   | `APP_USERNAME` | Recommended | Dashboard/API Basic auth username |
-   | `APP_PASSWORD` | Recommended | Dashboard/API Basic auth password |
+   | `AUTH_REQUIRED` | Recommended | `true` to require a login; this is the default |
+   | `APP_USERNAME` | Recommended | Username used to seed the first account |
+   | `APP_PASSWORD` | Recommended | Password used to seed the first account |
+   | `SESSION_LIFETIME_DAYS` | Optional | Login lifetime; default `7` |
    | `ALERT_FAILURE_THRESHOLD` | Optional | Consecutive failures before an outage alert; default `3` |
    | `ALERT_WEBHOOK_URL` | Optional | HTTPS endpoint that receives outage and recovery JSON |
    | `LOG_LEVEL` | Optional | `INFO` |
 
-   Both `APP_USERNAME` and `APP_PASSWORD` must be non-empty to enable auth. `/health` stays public so Railway can health-check the service.
-4. Generate a **public domain** in Railway (Settings → Networking → Generate domain). The app is then at `https://<your-service>.up.railway.app`. `/health` should return `{"status":"ok","database":"ok"}` without credentials. The dashboard, `/api`, `/docs`, and `/redoc` prompt for Basic auth when credentials are configured.
+   When both bootstrap values are present, the app creates that user once without storing the plaintext password. `/health` stays public so Railway can health-check the service.
+4. Generate a **public domain** in Railway (Settings → Networking → Generate domain). The app is then at `https://<your-service>.up.railway.app`. `/health` should return `{"status":"ok","database":"ok"}` without credentials. The dashboard redirects unauthenticated visitors to `/login`.
 5. Keep a **single replica**. Two replicas would run two workers against one SQLite file.
 
 This session does not create a Railway project or deploy the image.
@@ -198,8 +208,10 @@ All settings are environment variables (see `.env.example`):
 | `MANUAL_CHECK_WAIT_SECONDS` | `20` | API wait after “check now” |
 | `MAX_RESPONSE_BYTES` | `8192` | Body cap |
 | `LOG_LEVEL` | `INFO` | Logging |
-| `APP_USERNAME` | empty | Optional Basic auth user |
-| `APP_PASSWORD` | empty | Optional Basic auth password |
+| `AUTH_REQUIRED` | `true` | Protect dashboard, API, docs, and endpoint details |
+| `APP_USERNAME` | empty | Optional bootstrap account username |
+| `APP_PASSWORD` | empty | Optional bootstrap account password |
+| `SESSION_LIFETIME_DAYS` | `7` | Cookie and database session lifetime |
 | `ALERT_FAILURE_THRESHOLD` | `3` | Consecutive failures before creating an outage alert |
 | `ALERT_WEBHOOK_URL` | empty | Optional HTTPS JSON webhook for outage and recovery events |
 | `ALERT_WEBHOOK_TIMEOUT_SECONDS` | `5` | Webhook request timeout |

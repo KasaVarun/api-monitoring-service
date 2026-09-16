@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Log in · API Monitor</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body class="auth-page" data-auth-mode="login">
+    <main class="auth-shell">
+      <section class="auth-card">
+        <p class="eyebrow">Endpoint monitoring</p>
+        <h1>Welcome back</h1>
+        <p class="muted auth-intro">Log in to manage endpoints and review alerts.</p>
+        <form id="auth-form" class="auth-form">
+          <label>
+            Username
+            <input name="username" autocomplete="username" minlength="3" maxlength="100" required autofocus />
+          </label>
+          <label>
+            Password
+            <input name="password" type="password" autocomplete="current-password" maxlength="128" required />
+          </label>
+          <p id="auth-error" class="banner error hidden"></p>
+          <button type="submit" class="primary auth-submit">Log in</button>
+        </form>
+        <p class="auth-switch">New to API Monitor? <a href="/signup">Create an account</a></p>
+      </section>
+    </main>
+    <script src="/static/auth.js"></script>
+  </body>
+</html>

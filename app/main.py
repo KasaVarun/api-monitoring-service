@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.auth import BasicAuthMiddleware, auth_enabled
+from app.auth import SessionAuthMiddleware, bootstrap_configured_user, create_auth_router
 from app.checker import HttpChecker
 from app.config import Settings, get_settings
 from app.database import init_db, setup_database
@@ -44,14 +44,6 @@ def create_app(
         )
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
-        username_set = bool(settings.app_username.strip())
-        password_set = bool(settings.secret_password())
-        if username_set != password_set:
-            logging.getLogger(__name__).warning(
-                "APP_USERNAME and APP_PASSWORD must both be set to enable authentication"
-            )
-        elif auth_enabled(settings):
-            logging.getLogger(__name__).info("HTTP Basic authentication is enabled")
         engine, session_factory = setup_database(settings)
         await init_db(engine)
         app.state.settings = settings
@@ -59,6 +51,8 @@ def create_app(
         app.state.session_factory = session_factory
         app.state.resolver = resolve
         app.state.checker = http_checker
+        async with session_factory() as session:
+            await bootstrap_configured_user(session, settings)
         try:
             yield
         finally:
@@ -66,10 +60,7 @@ def create_app(
 
     app = FastAPI(
         title="API Monitor",
-        description=(
-            "HTTP endpoint monitoring service. Set APP_USERNAME and APP_PASSWORD "
-            "to enable HTTP Basic authentication. /health stays public."
-        ),
+        description="HTTP endpoint monitoring service with login sessions. /health stays public.",
         version="1.0.0",
         lifespan=lifespan,
         docs_url="/docs",
@@ -80,6 +71,7 @@ def create_app(
     app.state.resolver = resolve
     app.state.checker = http_checker
 
+    app.include_router(create_auth_router())
     app.include_router(create_api_router())
 
     @app.get("/health", response_model=HealthOut, tags=["health"])
@@ -130,11 +122,19 @@ def create_app(
         async def dashboard() -> FileResponse:
             return FileResponse(STATIC_DIR / "index.html")
 
+        @app.get("/login", include_in_schema=False)
+        async def login_page() -> FileResponse:
+            return FileResponse(STATIC_DIR / "login.html")
+
+        @app.get("/signup", include_in_schema=False)
+        async def signup_page() -> FileResponse:
+            return FileResponse(STATIC_DIR / "signup.html")
+
         @app.get("/endpoints/{endpoint_id}", include_in_schema=False)
         async def dashboard_detail(endpoint_id: str) -> FileResponse:  # noqa: ARG001
             return FileResponse(STATIC_DIR / "index.html")
 
-    app.add_middleware(BasicAuthMiddleware)
+    app.add_middleware(SessionAuthMiddleware)
     return app
 
 

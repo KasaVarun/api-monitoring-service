@@ -64,6 +64,7 @@ def settings(tmp_path: Path) -> Settings:
         worker_poll_seconds=0.05,
         manual_check_wait_seconds=3.0,
         max_response_bytes=2048,
+        auth_required=False,
     )
 
 

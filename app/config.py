@@ -26,8 +26,10 @@ class Settings(BaseSettings):
     manual_check_wait_seconds: float = Field(default=20.0, ge=1, le=120)
     max_response_bytes: int = Field(default=8192, ge=0, le=1_000_000)
     log_level: str = "INFO"
+    auth_required: bool = True
     app_username: str = ""
     app_password: SecretStr | None = None
+    session_lifetime_days: int = Field(default=7, ge=1, le=90)
     alert_failure_threshold: int = Field(default=3, ge=1, le=100)
     alert_webhook_url: SecretStr | None = None
     alert_webhook_timeout_seconds: float = Field(default=5.0, ge=1, le=30)

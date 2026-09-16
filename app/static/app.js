@@ -41,6 +41,8 @@ const els = {
   editCancel: document.getElementById("edit-cancel"),
   deleteDialog: document.getElementById("delete-dialog"),
   deleteConfirm: document.getElementById("delete-confirm"),
+  currentUser: document.getElementById("current-user"),
+  logoutBtn: document.getElementById("logout-btn"),
 };
 
 function apiError(payload, fallback) {
@@ -55,6 +57,10 @@ async function request(url, options = {}) {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
   });
+  if (response.status === 401) {
+    window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`);
+    throw new Error("Your session has expired");
+  }
   if (response.status === 204) return null;
   const text = await response.text();
   let data = null;
@@ -368,6 +374,16 @@ els.nextPage.addEventListener("click", async () => {
 
 els.refreshBtn.addEventListener("click", loadAll);
 
+els.logoutBtn.addEventListener("click", async () => {
+  await request("/api/auth/logout", { method: "POST" });
+  window.location.assign("/login");
+});
+
+async function loadCurrentUser() {
+  const user = await request("/api/auth/me");
+  els.currentUser.textContent = user.username;
+}
+
 function startTimer() {
   if (state.timer) clearInterval(state.timer);
   state.timer = setInterval(loadAll, REFRESH_MS);
@@ -381,5 +397,4 @@ function bootFromPath() {
 }
 
 bootFromPath();
-loadAll();
-startTimer();
+Promise.all([loadCurrentUser(), loadAll()]).then(startTimer);
